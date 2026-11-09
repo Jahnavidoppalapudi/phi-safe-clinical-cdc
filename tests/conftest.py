@@ -2,6 +2,7 @@ import os
 import shutil
 import subprocess
 import uuid
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -26,8 +27,8 @@ def deid(policy):
     return Deidentifier(TEST_KEY, policy, today=date(2026, 11, 9))
 
 
-@pytest.fixture
-def ehr_db():
+@contextmanager
+def fresh_ehr_db():
     """A fresh EHR database built from sql/ehr, the same scripts the container runs."""
     if not TEST_DATABASE_URL:
         pytest.skip("TEST_DATABASE_URL not set")
@@ -41,14 +42,49 @@ def ehr_db():
     conn = psycopg.connect(make_conninfo(**params), autocommit=True)
     conn.execute((ROOT / "sql/ehr/01_schema.sql").read_text())
     conn.info_params = params
-    yield conn
-    conn.close()
-    for slot in admin.execute(
-        "select slot_name from pg_replication_slots where database = %s", (name,)
-    ).fetchall():
-        admin.execute("select pg_drop_replication_slot(%s)", slot)
-    admin.execute(f"drop database {name} with (force)")
-    admin.close()
+    try:
+        yield conn
+    finally:
+        conn.close()
+        for slot in admin.execute(
+            "select slot_name from pg_replication_slots where database = %s", (name,)
+        ).fetchall():
+            admin.execute("select pg_drop_replication_slot(%s)", slot)
+        admin.execute(f"drop database {name} with (force)")
+        admin.close()
+
+
+@contextmanager
+def fresh_analytics_schema():
+    """Analytics-zone tables and views in a fresh, throwaway schema."""
+    if not TEST_DATABASE_URL:
+        pytest.skip("TEST_DATABASE_URL not set")
+    psycopg = pytest.importorskip("psycopg")
+    from src.analytics import apply_schema
+
+    schema = f"analytics_{uuid.uuid4().hex[:10]}"
+    conn = psycopg.connect(TEST_DATABASE_URL, autocommit=True)
+    conn.execute(f"create schema {schema}")
+    conn.execute(f"set search_path to {schema}")
+    apply_schema(conn)
+    conn.schema = schema
+    try:
+        yield conn
+    finally:
+        conn.execute(f"drop schema {schema} cascade")
+        conn.close()
+
+
+@pytest.fixture
+def ehr_db():
+    with fresh_ehr_db() as conn:
+        yield conn
+
+
+@pytest.fixture
+def analytics_db():
+    with fresh_analytics_schema() as conn:
+        yield conn
 
 
 def run_role_script(params: dict, password: str) -> subprocess.CompletedProcess:
@@ -61,3 +97,15 @@ def run_role_script(params: dict, password: str) -> subprocess.CompletedProcess:
            "PGPASSWORD": params.get("password", "")}  # fmt: skip
     return subprocess.run(["sh", str(ROOT / "sql/ehr/02_cdc_role.sh")], env=env,
                           capture_output=True, text=True)  # fmt: skip
+
+
+def change(table, op, row, lsn, before=None):
+    """A parsed CDC event, as src.cdc.parse_event would return it."""
+    from datetime import UTC, datetime
+
+    from src.cdc import ChangeEvent
+
+    ops = {"c": "insert", "r": "snapshot", "u": "update", "d": "delete"}
+    return ChangeEvent(table=table, op=ops[op],
+                       before=row if op == "d" else before, after=None if op == "d" else row,
+                       lsn=lsn, tx_id=None, committed_at=datetime.now(UTC))  # fmt: skip
