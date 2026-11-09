@@ -1,0 +1,40 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Secrets
+.env
+
+# Data (never commit datasets)
+data/
+*.parquet
+*.csv
+# ...except small, reviewed config and reference files that the project needs
+!config/*.csv
+!dbt/seeds/*.csv
+!tests/fixtures/*.csv
+
+# Tool output
+logs/
+dbt/target/
+dbt/dbt_packages/
+dbt/logs/
+*.duckdb
+*.duckdb.wal
+.silver_cache/
+spark-warehouse/
+metastore_db/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/
