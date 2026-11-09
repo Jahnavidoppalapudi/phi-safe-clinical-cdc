@@ -52,6 +52,10 @@ EHR PostgreSQL ──WAL──▶ Debezium ──▶ Redpanda ehr.public.* ─�
 
 ### Results on the simulated hospital
 
+- **Live run (Docker on a laptop):** 796 inpatient discharges, 12.6% 30-day readmission rate
+  (8.0% Pulmonology to 16.1% Nephrology), 4.4–4.8 day average inpatient stays, about 18,000 lab
+  results de-identified, and 0 identifier patterns found by the leak scan.
+
 - 30-day inpatient readmission rate and average length of stay computed on the **de-identified,
   date-shifted** data are **identical** to the same metrics on the raw EHR data (tested in CI).
 - Zero identifier patterns in the analytics zone (leak scan, tested in CI with a planted SSN to prove
@@ -60,6 +64,13 @@ EHR PostgreSQL ──WAL──▶ Debezium ──▶ Redpanda ehr.public.* ─�
   readmission rate, close to US hospital averages. Its first version produced 2-day stays and 40%
   readmissions, because random patient selection kept re-admitting recently discharged patients;
   each stay now has its own planned length, and regular admissions skip recent patients.
+
+## Why No Airflow?
+
+Debezium streams the database log and the processor consumes it continuously, so both run as
+long-lived services. Scheduled jobs here (the leak scan, consent checks) run inside the processor.
+Airflow is the right tool for batch pipelines like my SEC lakehouse project, not for consumers
+that never finish.
 
 ## Key Design Decisions
 
