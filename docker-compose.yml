@@ -1,5 +1,7 @@
-# PHI zone for an 8 GB laptop: a simulated hospital database, Debezium CDC (Kafka Connect),
-# and a Redpanda broker. Day 8 adds the de-identification processor and the analytics zone.
+# Runs on an 8 GB laptop (about 3 GB in total).
+# PHI zone: simulated hospital database, Debezium CDC (Kafka Connect), Redpanda.
+# Boundary: the de-identification processor, the only reader of raw CDC topics.
+# Analytics zone: a separate database holding de-identified data only.
 
 services:
   ehr-db:
@@ -117,6 +119,38 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  deid-processor:
+    build: .
+    command: ["python", "-m", "src.processor"]
+    environment:
+      KAFKA_BOOTSTRAP: redpanda:9092
+      ANALYTICS_DATABASE_URL: postgresql://analytics_owner:${ANALYTICS_DB_PASSWORD}@analytics-db:5432/analytics
+      ANALYST_PASSWORD: ${ANALYST_PASSWORD:?run make env}
+      DEID_SECRET: ${DEID_SECRET:?run make env}
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      analytics-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  analytics-db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: analytics_owner
+      POSTGRES_PASSWORD: ${ANALYTICS_DB_PASSWORD:?run make env}
+      POSTGRES_DB: analytics
+    ports:
+      - "15434:5432"
+    volumes:
+      - analytics-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "analytics_owner", "-d", "analytics"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
 volumes:
   ehr-data:
   redpanda-data:
+  analytics-data:
