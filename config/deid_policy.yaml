@@ -1,0 +1,65 @@
+# De-identification policy: what happens to every column before data leaves the PHI zone.
+#
+# Deny by default: a column that is not listed here is DROPPED and reported as "unclassified",
+# so a new column added to the EHR (say, a second phone number) can never leak by accident.
+#
+# Actions
+#   token         keyed HMAC pseudonym; same input -> same token, so joins still work
+#   shift_date    moved by a per-patient random offset (intervals such as length of stay preserved)
+#   birth_year    year of birth only; anyone 90 or older becomes "90+" with no year (Safe Harbor)
+#   zip3          first 3 ZIP digits; the 3-digit areas with under 20,000 people become "000"
+#   keep          copied unchanged (reviewed: not an identifier)
+#   drop          removed
+#
+# Modelled on HIPAA de-identification methods (45 CFR 164.514). A real deployment needs a
+# privacy officer's review or an expert determination; this file is not a compliance certificate.
+
+tables:
+  patients:
+    patient_id: token
+    mrn: drop
+    first_name: drop
+    last_name: drop
+    date_of_birth: birth_year
+    sex: keep
+    ssn: drop
+    phone: drop
+    email: drop
+    street: drop
+    city: drop
+    state: keep
+    zip: zip3
+    created_at: shift_date
+    updated_at: drop
+
+  encounters:
+    encounter_id: token
+    patient_id: token
+    encounter_type: keep
+    department: keep
+    admitted_at: shift_date
+    discharged_at: shift_date
+    primary_dx_code: keep
+    status: keep
+    attending_npi: drop        # provider identifier, not needed for analytics
+    notes: drop                # free text can contain anything, including names and phone numbers
+    updated_at: drop
+
+  lab_results:
+    lab_id: token
+    encounter_id: token
+    patient_id: token
+    loinc_code: keep
+    test_name: keep
+    value_numeric: keep
+    unit: keep
+    reference_low: keep
+    reference_high: keep
+    abnormal_flag: keep
+    collected_at: shift_date
+    resulted_at: shift_date
+
+  consents:                     # controls processing; not copied to analytics
+    patient_id: token
+    research_use: keep
+    updated_at: drop
