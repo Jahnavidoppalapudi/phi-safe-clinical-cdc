@@ -1,0 +1,122 @@
+# PHI zone for an 8 GB laptop: a simulated hospital database, Debezium CDC (Kafka Connect),
+# and a Redpanda broker. Day 8 adds the de-identification processor and the analytics zone.
+
+services:
+  ehr-db:
+    image: postgres:16-alpine
+    command:
+      - postgres
+      - -c
+      - wal_level=logical             # required for change data capture
+      - -c
+      - max_replication_slots=4
+      - -c
+      - max_wal_senders=4
+      - -c
+      - max_slot_wal_keep_size=1GB    # a stalled CDC reader can never fill the disk
+    environment:
+      POSTGRES_USER: ehr_owner
+      POSTGRES_PASSWORD: ${EHR_DB_PASSWORD:?run make env}
+      POSTGRES_DB: ehr
+      CDC_PASSWORD: ${CDC_PASSWORD:?run make env}
+    ports:
+      - "15433:5432"
+    volumes:
+      - ./sql/ehr:/docker-entrypoint-initdb.d:ro
+      - ehr-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "ehr_owner", "-d", "ehr"]
+      interval: 5s
+      retries: 10
+    restart: unless-stopped
+
+  simulator:
+    build: .
+    command: ["python", "-m", "src.simulator"]
+    environment:
+      EHR_DATABASE_URL: postgresql://ehr_owner:${EHR_DB_PASSWORD}@ehr-db:5432/ehr
+      SIM_BACKFILL_DAYS: ${SIM_BACKFILL_DAYS:-90}
+      SIM_LIVE_SECONDS: ${SIM_LIVE_SECONDS:-10}
+    depends_on:
+      ehr-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v26.1.14
+    command:
+      - redpanda
+      - start
+      - --kafka-addr internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr internal://redpanda:9092,external://localhost:19092
+      - --rpc-addr redpanda:33145
+      - --advertise-rpc-addr redpanda:33145
+      - --mode dev-container
+      - --smp 1
+      - --memory 1G
+      - --default-log-level=warn
+    ports:
+      - "19092:19092"
+    volumes:
+      - redpanda-data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -E 'Healthy:.+true' || exit 1"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  connect:
+    image: quay.io/debezium/connect:3.6.3.Final
+    environment:
+      BOOTSTRAP_SERVERS: redpanda:9092
+      GROUP_ID: ehr-connect
+      CONFIG_STORAGE_TOPIC: _connect_configs
+      OFFSET_STORAGE_TOPIC: _connect_offsets
+      STATUS_STORAGE_TOPIC: _connect_status
+      CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      STATUS_STORAGE_REPLICATION_FACTOR: 1
+      HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "8083:8083"     # Kafka Connect REST API
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      ehr-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  connector-setup:
+    build: .
+    command: ["python", "-m", "src.register_connector"]
+    environment:
+      CONNECT_URL: http://connect:8083
+      CDC_PASSWORD: ${CDC_PASSWORD}
+    depends_on:
+      - connect
+    restart: on-failure
+
+  console:
+    image: docker.redpanda.com/redpandadata/console:v3.14.0
+    entrypoint: /bin/sh
+    command: -c 'echo "$$CONSOLE_CONFIG_FILE" > /tmp/config.yml && /app/console'
+    environment:
+      CONFIG_FILEPATH: /tmp/config.yml
+      CONSOLE_CONFIG_FILE: |
+        kafka:
+          brokers: ["redpanda:9092"]
+        kafkaConnect:
+          enabled: true
+          clusters:
+            - name: ehr-connect
+              url: http://connect:8083
+    ports:
+      - "8085:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ehr-data:
+  redpanda-data:
